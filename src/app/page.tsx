@@ -1,7 +1,13 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { FirebaseAuthModal, UserRole } from "@/components/FirebaseAuthModal";
+import { toast } from "@/components/Toast";
+import { MobileProfileScreen } from "@/components/profile/MobileProfileScreen";
+import { MobileWalletScreen } from "@/components/wallet/MobileWalletScreen";
+import { MobileEditProfileModal } from "@/components/profile/MobileEditProfileModal";
 import {
+  Wallet,
   MapPin,
   Search,
   Mic,
@@ -374,37 +380,57 @@ export default function MobileAppSimulator() {
   const [selectedCity, setSelectedCity] = useState<"Hyderabad" | "Vijayawada" | "Guntur">("Hyderabad");
   const [selectedLocality, setSelectedLocality] = useState("Hitec City");
   const [showCityDropdown, setShowCityDropdown] = useState(false);
-  const [activeTab, setActiveTab] = useState<"Home" | "Services" | "Enquiries" | "Notifications" | "Profile">("Home");
+  const [activeTab, setActiveTab] = useState<"Home" | "Services" | "Wallet" | "Enquiries" | "Notifications" | "Profile">("Home");
   const [businesses, setBusinesses] = useState<MobileBusiness[]>(DEFAULT_BUSINESSES);
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoadingApi, setIsLoadingApi] = useState(false);
+  const [coupons, setCoupons] = useState<any[]>([]);
+  const [selectedCouponModal, setSelectedCouponModal] = useState<any | null>(null);
+  const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
+  const [liveNotifications, setLiveNotifications] = useState<any[]>([]);
+  const [isLoadingNotifs, setIsLoadingNotifs] = useState(false);
 
   // Enquiry state
   const [enquiryModalBiz, setEnquiryModalBiz] = useState<MobileBusiness | null>(null);
   const [enquirySuccessRef, setEnquirySuccessRef] = useState<string | null>(null);
   const [enquiryMessage, setEnquiryMessage] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("+91 98480 77777");
-  const [customerName, setCustomerName] = useState("Vikram");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authModalRole, setAuthModalRole] = useState<UserRole>("customer");
+  const [authModalTab, setAuthModalTab] = useState<"login" | "register">("login");
+  const [isFirebaseLoggedIn, setIsFirebaseLoggedIn] = useState(false);
+  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
+
+  // Sync auth state from localStorage on mount & listen for auth changes
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const syncAuth = () => {
+        const token = localStorage.getItem("hello_access_token");
+        const userStr = localStorage.getItem("hello_user");
+        if (token && userStr) {
+          try {
+            const u = JSON.parse(userStr);
+            setIsFirebaseLoggedIn(true);
+            setCustomerName(u.fullName || u.displayName || "User");
+            setCustomerPhone(u.phoneNumber || "");
+          } catch { }
+        } else {
+          setIsFirebaseLoggedIn(false);
+          setCustomerName("");
+          setCustomerPhone("");
+        }
+      };
+      syncAuth();
+      window.addEventListener("hello_auth_changed", syncAuth);
+      return () => window.removeEventListener("hello_auth_changed", syncAuth);
+    }
+  }, []);
 
   // My Enquiries history
-  const [myEnquiries, setMyEnquiries] = useState<any[]>([
-    {
-      referenceNo: "ENQ-2026-HYD-9812",
-      businessName: "Amnesia Sky Bar & Lakeview",
-      status: "CONFIRMED",
-      date: "Just now",
-      message: "Rooftop sunset table reservation for 4 people."
-    },
-    {
-      referenceNo: "ENQ-2026-VJA-2977",
-      businessName: "Siri Dental Clinic",
-      status: "UNDER REVIEW",
-      date: "Today, 10:15 AM",
-      message: "Interested in invisible aligners consultation."
-    }
-  ]);
+  const [myEnquiries, setMyEnquiries] = useState<any[]>([]);
 
   // Map category helper
   const getCategoryIcon = (catSlug?: string) => {
@@ -494,6 +520,94 @@ export default function MobileAppSimulator() {
     fetchFromApi();
   }, [selectedCity, selectedCategory, searchQuery]);
 
+  // Fetch live active coupons directly from API without mock/fallback data
+  useEffect(() => {
+    async function fetchCoupons() {
+      try {
+        const cityParam = selectedCity ? `?city=${encodeURIComponent(selectedCity.toLowerCase())}` : "";
+        const res = await fetch(`${API_BASE}/coupons${cityParam}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json?.success && Array.isArray(json?.data)) {
+            setCoupons(json.data);
+            return;
+          }
+        }
+        setCoupons([]);
+      } catch (err) {
+        console.warn("[Mobile] Failed to fetch coupons from API:", err);
+        setCoupons([]);
+      }
+    }
+
+    fetchCoupons();
+  }, [selectedCity]);
+
+  // Fetch unread notification count — only when logged in
+  useEffect(() => {
+    if (!isFirebaseLoggedIn) {
+      setUnreadNotifCount(0);
+      return;
+    }
+    async function fetchNotifCount() {
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const token = localStorage.getItem("hello_access_token");
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const userStr = localStorage.getItem("hello_user");
+        if (userStr) {
+          try {
+            const u = JSON.parse(userStr);
+            if (u.id) headers["x-user-id"] = u.id;
+          } catch { }
+        }
+        const res = await fetch(`${API_BASE}/notifications/counts`, { headers });
+        if (res.ok) {
+          const json = await res.json();
+          const count = json?.data?.customerUnread ?? 0;
+          setUnreadNotifCount(Number(count));
+        } else {
+          setUnreadNotifCount(0);
+        }
+      } catch {
+        setUnreadNotifCount(0);
+      }
+    }
+    fetchNotifCount();
+  }, [isFirebaseLoggedIn]);
+
+  // Fetch live notifications when Notifications tab is opened (and logged in)
+  useEffect(() => {
+    if (!isFirebaseLoggedIn || activeTab !== "Notifications") return;
+    async function fetchNotifications() {
+      setIsLoadingNotifs(true);
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const token = localStorage.getItem("hello_access_token");
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const userStr = localStorage.getItem("hello_user");
+        if (userStr) {
+          try {
+            const u = JSON.parse(userStr);
+            if (u.id) headers["x-user-id"] = u.id;
+          } catch { }
+        }
+        const res = await fetch(`${API_BASE}/notifications?role=customer&pageSize=20`, { headers });
+        if (res.ok) {
+          const json = await res.json();
+          setLiveNotifications(Array.isArray(json?.data) ? json.data : []);
+        } else {
+          setLiveNotifications([]);
+        }
+      } catch {
+        setLiveNotifications([]);
+      } finally {
+        setIsLoadingNotifs(false);
+      }
+    }
+    fetchNotifications();
+  }, [isFirebaseLoggedIn, activeTab]);
+
   const handleEnquirySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!enquiryModalBiz) return;
@@ -540,7 +654,7 @@ export default function MobileAppSimulator() {
 
   return (
     <div className="min-h-screen bg-[#070B14] flex flex-col items-center justify-center p-2 sm:p-6 text-slate-800 overflow-x-hidden">
-      
+
       {/* Top Banner Indicator */}
       <div className="mb-3 text-center">
         <div className="inline-flex items-center gap-2 bg-[#131E32] text-slate-200 px-4 py-1.5 rounded-full text-xs font-semibold border border-[#24324D] shadow-lg">
@@ -551,7 +665,7 @@ export default function MobileAppSimulator() {
 
       {/* Simulated Smartphone Frame (iPhone 15 Pro) */}
       <div className="w-full max-w-[390px] h-[830px] bg-white rounded-[50px] shadow-2xl border-[10px] border-[#1F2937] overflow-hidden flex flex-col relative ring-1 ring-white/10">
-        
+
         {/* Dynamic Island / Top Notch */}
         <div className="bg-white pt-2.5 pb-1 px-7 flex items-center justify-between shrink-0 select-none z-30">
           <span className="text-[11px] font-bold text-slate-800 tracking-tight">09:41</span>
@@ -566,7 +680,7 @@ export default function MobileAppSimulator() {
 
         {/* Scrollable Mobile Body Content (Zero Horizontal Scrollbar) */}
         <div className="flex-1 overflow-y-auto bg-[#F8FAFC] pb-24 no-scrollbar">
-          
+
           {activeTab === "Services" ? (
             /* ================= ALL 14 SERVICES EXPLORE GRID ================= */
             <div className="p-4 space-y-4">
@@ -597,11 +711,10 @@ export default function MobileAppSimulator() {
                         setSelectedCategory(srv.slug);
                         setActiveTab("Home");
                       }}
-                      className={`p-3 rounded-2xl border transition cursor-pointer flex items-center gap-2.5 ${
-                        isSelected
-                          ? "bg-blue-50 border-[#0076D7] shadow-sm ring-2 ring-[#0076D7]"
-                          : "bg-white border-slate-200 hover:border-slate-300 shadow-2xs"
-                      }`}
+                      className={`p-3 rounded-2xl border transition cursor-pointer flex items-center gap-2.5 ${isSelected
+                        ? "bg-blue-50 border-[#0076D7] shadow-sm ring-2 ring-[#0076D7]"
+                        : "bg-white border-slate-200 hover:border-slate-300 shadow-2xs"
+                        }`}
                     >
                       <div className={`w-10 h-10 rounded-xl ${srv.bgColor} flex items-center justify-center text-lg shrink-0 shadow-2xs`}>
                         {srv.icon}
@@ -645,71 +758,156 @@ export default function MobileAppSimulator() {
                 </div>
               ))}
             </div>
+          ) : activeTab === "Wallet" ? (
+            /* ================= WALLET TAB ================= */
+            !isFirebaseLoggedIn ? (
+              <div className="p-6 text-center space-y-4 my-auto flex flex-col items-center justify-center min-h-[400px]">
+                <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-[#FF512F] via-[#FF6B35] to-[#F09819] flex items-center justify-center shadow-lg">
+                  <Wallet className="w-8 h-8 text-white" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-base font-black text-slate-900">Sign In to Access Wallet</h3>
+                  <p className="text-xs text-slate-500 max-w-[240px]">
+                    Recharge your HELLO-Hi wallet and manage your balance securely.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setAuthModalRole("customer");
+                    setAuthModalTab("login");
+                    setIsAuthModalOpen(true);
+                  }}
+                  className="px-6 py-2.5 rounded-full bg-[#0076D7] text-white text-xs font-bold shadow-sm active:scale-95 transition"
+                >
+                  Sign In / Register
+                </button>
+              </div>
+            ) : (
+              <MobileWalletScreen
+                currentUser={{
+                  displayName: customerName,
+                  fullName: customerName,
+                  phoneNumber: customerPhone,
+                  role: mode === "vendor" ? "VENDOR" : "CUSTOMER",
+                }}
+                onNavigateHome={() => setActiveTab("Home")}
+                onOpenAuth={() => {
+                  setAuthModalRole("customer");
+                  setAuthModalTab("login");
+                  setIsAuthModalOpen(true);
+                }}
+              />
+            )
           ) : activeTab === "Notifications" ? (
             /* ================= ALERTS TAB ================= */
-            <div className="p-4 space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-200">
-                <h3 className="text-sm font-black text-slate-900">Notifications & Alerts</h3>
-                <span className="text-[10px] text-slate-400">Today</span>
-              </div>
-              <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-[#FF6B35]" />
-                  <span className="text-xs font-bold text-slate-900">Special Hitec City Offer</span>
+            !isFirebaseLoggedIn ? (
+              <div className="p-6 text-center space-y-4 my-auto flex flex-col items-center justify-center min-h-[400px]">
+                <div className="w-16 h-16 rounded-full bg-blue-50 border border-blue-200 flex items-center justify-center text-[#0076D7] shadow-sm">
+                  <Bell className="w-8 h-8" />
                 </div>
-                <p className="text-[11px] text-slate-600">Get 1+1 on Craft Cocktails at Amnesia Sky Bar this Friday!</p>
-                <span className="text-[9px] text-slate-400 block pt-1">12 mins ago</span>
-              </div>
-              <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  <span className="text-xs font-bold text-slate-900">KYC Verified Update</span>
+                <div className="space-y-1">
+                  <h3 className="text-base font-black text-slate-900">Sign in to View Notifications</h3>
+                  <p className="text-xs text-slate-500 max-w-[240px]">
+                    Access real-time enquiries, exclusive offers, and order alerts for your account.
+                  </p>
                 </div>
-                <p className="text-[11px] text-slate-600">Your registered mobile number is verified with DPDP Act 2023 compliance.</p>
-                <span className="text-[9px] text-slate-400 block pt-1">2 hours ago</span>
+                <button
+                  onClick={() => {
+                    setAuthModalRole("customer");
+                    setAuthModalTab("login");
+                    setIsAuthModalOpen(true);
+                  }}
+                  className="bg-[#0076D7] hover:bg-[#0060B2] text-white px-6 py-2.5 rounded-full font-bold text-xs shadow-md active:scale-95 transition"
+                >
+                  Log In Now
+                </button>
               </div>
-            </div>
+            ) : (
+              <div className="p-4 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                  <h3 className="text-sm font-black text-slate-900">Notifications &amp; Alerts</h3>
+                  <span className="text-[10px] text-slate-400">Recent</span>
+                </div>
+                {isLoadingNotifs ? (
+                  <div className="py-10 text-center">
+                    <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto" />
+                  </div>
+                ) : liveNotifications.length === 0 ? (
+                  <div className="py-10 text-center space-y-2">
+                    <Bell className="w-8 h-8 text-slate-300 mx-auto" />
+                    <p className="text-xs font-bold text-slate-500">No notifications yet</p>
+                    <p className="text-[10px] text-slate-400">Your alerts will appear here</p>
+                  </div>
+                ) : (
+                  liveNotifications.map((notif: any) => (
+                    <div key={notif.id} className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${notif.status === "UNREAD" ? "bg-[#FF6B35]" : "bg-slate-300"}`} />
+                        <span className="text-xs font-bold text-slate-900 truncate">{notif.title}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600">{notif.message || notif.body}</p>
+                      {notif.created_at && (
+                        <span className="text-[9px] text-slate-400 block pt-1">
+                          {new Date(notif.created_at).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )
           ) : activeTab === "Profile" ? (
-            /* ================= PROFILE TAB ================= */
-            <div className="p-4 space-y-4">
-              <div className="bg-white rounded-2xl border border-slate-200 p-4 text-center space-y-2 shadow-xs">
-                <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-[#0076D7] to-[#FF6B35] text-white flex items-center justify-center mx-auto text-xl font-bold shadow-md">
-                  V
-                </div>
-                <h4 className="text-sm font-black text-slate-900">Vikram (Customer)</h4>
-                <div className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                  <ShieldCheck className="w-3 h-3 text-emerald-600" /> +91 98480 77777 (Verified)
-                </div>
-              </div>
-
-              <div className="bg-white rounded-2xl border border-slate-200 p-3.5 space-y-3 text-xs shadow-xs">
-                <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                  <span className="text-slate-600">Active City</span>
-                  <span className="font-bold text-slate-900">{selectedCity} ({selectedLocality})</span>
-                </div>
-                <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                  <span className="text-slate-600">Account Role</span>
-                  <span className="font-bold text-[#0076D7]">Customer Mode</span>
-                </div>
-                <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                  <span className="text-slate-600">Available Services</span>
-                  <span className="font-bold text-slate-800">14 Categories</span>
-                </div>
-                <div className="flex items-center justify-between py-1">
-                  <span className="text-slate-600">Business Management</span>
-                  <button 
-                    onClick={() => setMode("vendor")}
-                    className="text-[#FF6B35] font-bold hover:underline"
-                  >
-                    Switch to Vendor Mode →
-                  </button>
-                </div>
-              </div>
-            </div>
+            /* ================= PROFILE TAB (MATCHING APPROVED REFERENCE DESIGN) ================= */
+            <MobileProfileScreen
+              selectedCity={selectedCity}
+              selectedLocality={selectedLocality}
+              onOpenCitySelector={() => setShowCityDropdown(true)}
+              isAuthenticated={isFirebaseLoggedIn}
+              currentUser={
+                isFirebaseLoggedIn
+                  ? {
+                    displayName: customerName,
+                    fullName: customerName,
+                    businessName: mode === "vendor" ? customerName : undefined,
+                    phoneNumber: customerPhone,
+                    role: mode === "vendor" ? "VENDOR" : "CUSTOMER",
+                    status: "Active",
+                    isVerified: false,
+                  }
+                  : null
+              }
+              onOpenAuth={(role, tab) => {
+                const targetRole = role === "vendor" ? "vendor" : "customer";
+                setAuthModalRole(targetRole);
+                if (tab) setAuthModalTab(tab);
+                setIsAuthModalOpen(true);
+              }}
+              onSignOut={() => {
+                setIsFirebaseLoggedIn(false);
+                setCustomerName("");
+                setCustomerPhone("");
+                if (typeof window !== "undefined") {
+                  localStorage.removeItem("hello_access_token");
+                  localStorage.removeItem("hello_user");
+                  localStorage.removeItem("hello_active_role");
+                  window.dispatchEvent(new Event("hello_auth_changed"));
+                }
+              }}
+              onEditProfile={() => setIsEditProfileModalOpen(true)}
+              onNavigateTab={(tab) => {
+                if (tab === "Notifications" && !isFirebaseLoggedIn) {
+                  setAuthModalRole("customer");
+                  setAuthModalTab("login");
+                  setIsAuthModalOpen(true);
+                  return;
+                }
+                setActiveTab(tab);
+              }}
+            />
           ) : mode === "customer" ? (
             /* ================= CUSTOMER MODE VIEW ================= */
             <div className="space-y-3.5">
-              
+
               {/* Header: City Selector + GPS Detect + Bell */}
               <div className="px-4 pt-2 flex items-center justify-between relative">
                 <div className="relative">
@@ -737,11 +935,10 @@ export default function MobileAppSimulator() {
                             setSelectedLocality(city === "Hyderabad" ? "Hitec City" : city === "Vijayawada" ? "Nahamar" : "Brodipet");
                             setShowCityDropdown(false);
                           }}
-                          className={`w-full text-left px-3.5 py-2 text-xs font-semibold flex items-center justify-between transition ${
-                            selectedCity === city
-                              ? "bg-[#0076D7] text-white"
-                              : "text-slate-700 hover:bg-slate-50"
-                          }`}
+                          className={`w-full text-left px-3.5 py-2 text-xs font-semibold flex items-center justify-between transition ${selectedCity === city
+                            ? "bg-[#0076D7] text-white"
+                            : "text-slate-700 hover:bg-slate-50"
+                            }`}
                         >
                           <span>{city}</span>
                           <span className="text-[10px] opacity-80">
@@ -753,14 +950,24 @@ export default function MobileAppSimulator() {
                   )}
                 </div>
 
-                <div 
-                  onClick={() => setActiveTab("Notifications")}
+                <div
+                  onClick={() => {
+                    if (!isFirebaseLoggedIn) {
+                      setAuthModalRole("customer");
+                      setAuthModalTab("login");
+                      setIsAuthModalOpen(true);
+                      return;
+                    }
+                    setActiveTab("Notifications");
+                  }}
                   className="relative p-1.5 rounded-full bg-slate-100 cursor-pointer"
                 >
                   <Bell className="w-4 h-4 text-slate-700" />
-                  <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center">
-                    1
-                  </span>
+                  {isFirebaseLoggedIn && unreadNotifCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-red-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center">
+                      {unreadNotifCount > 9 ? "9+" : unreadNotifCount}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -775,14 +982,7 @@ export default function MobileAppSimulator() {
                     placeholder="Search Biryani, Dental, Hotels, Spa..."
                     className="flex-1 text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none"
                   />
-                  <Mic 
-                    onClick={() => setSearchQuery("Amnesia Sky Bar")}
-                    className="w-4 h-4 text-slate-400 shrink-0 cursor-pointer hover:text-[#0076D7]" 
-                  />
-                  <Camera 
-                    onClick={() => alert("📷 Visual QR / Storefront scanner activated")}
-                    className="w-4 h-4 text-slate-400 shrink-0 cursor-pointer hover:text-[#0076D7]" 
-                  />
+
                 </div>
               </div>
 
@@ -802,11 +1002,10 @@ export default function MobileAppSimulator() {
                 <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scrollbar-none py-1">
                   <button
                     onClick={() => setSelectedCategory("All")}
-                    className={`px-3 py-1.5 rounded-full whitespace-nowrap text-[11px] font-bold border transition shrink-0 ${
-                      selectedCategory === "All"
-                        ? "bg-[#0076D7] text-white border-[#0076D7] shadow-xs"
-                        : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-                    }`}
+                    className={`px-3 py-1.5 rounded-full whitespace-nowrap text-[11px] font-bold border transition shrink-0 ${selectedCategory === "All"
+                      ? "bg-[#0076D7] text-white border-[#0076D7] shadow-xs"
+                      : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                      }`}
                   >
                     🌟 All
                   </button>
@@ -817,11 +1016,10 @@ export default function MobileAppSimulator() {
                       <button
                         key={cat.id}
                         onClick={() => setSelectedCategory(isSelected ? "All" : cat.slug)}
-                        className={`px-3 py-1.5 rounded-full whitespace-nowrap text-[11px] font-semibold border flex items-center gap-1 transition shrink-0 ${
-                          isSelected
-                            ? "bg-[#0076D7] text-white border-[#0076D7] shadow-xs font-bold"
-                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-                        }`}
+                        className={`px-3 py-1.5 rounded-full whitespace-nowrap text-[11px] font-semibold border flex items-center gap-1 transition shrink-0 ${isSelected
+                          ? "bg-[#0076D7] text-white border-[#0076D7] shadow-xs font-bold"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                          }`}
                       >
                         <span>{cat.icon}</span>
                         <span>{cat.name}</span>
@@ -831,18 +1029,47 @@ export default function MobileAppSimulator() {
                 </div>
               </div>
 
-              {/* Promo Banner Carousel (Zero Scrollbar) */}
+              {/* Promo Banner Carousel (Dynamic Live Coupons from API) */}
               <div className="px-4 flex gap-2.5 overflow-x-auto no-scrollbar scrollbar-none pt-0.5">
-                <div className="min-w-[220px] bg-gradient-to-r from-[#0B1220] to-[#1E293B] text-white p-3 rounded-2xl shadow-xs flex items-center justify-between">
-                  <div>
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">Festival Deals</span>
-                    <h4 className="text-xs font-black leading-tight mt-0.5">UP TO 50% OFF</h4>
-                    <p className="text-[9px] text-slate-300">Verified {selectedCity} Vendors</p>
+                {coupons && coupons.length > 0 ? (
+                  coupons.map((cpn: any) => (
+                    <div
+                      key={cpn.id}
+                      onClick={() => setSelectedCouponModal(cpn)}
+                      className="min-w-[230px] bg-gradient-to-r from-[#0B1220] via-slate-900 to-[#1E293B] text-white p-3 rounded-2xl shadow-xs flex items-center justify-between cursor-pointer border border-slate-800/80 hover:border-amber-400/40 transition active:scale-98"
+                    >
+                      <div className="min-w-0 pr-2">
+                        <span className="text-[9px] font-black uppercase tracking-wider text-amber-400 block truncate">
+                          {cpn.category || "Exclusive Deal"}
+                        </span>
+                        <h4 className="text-xs font-black leading-tight mt-0.5 text-white truncate">
+                          {cpn.title}
+                        </h4>
+                        <div className="flex items-center gap-1.5 mt-1 text-[9px] text-slate-300 font-mono">
+                          <span className="bg-white/10 px-1.5 py-0.5 rounded-sm text-amber-300 font-bold border border-white/10">
+                            {cpn.code}
+                          </span>
+                          <span className="text-emerald-400 font-bold text-[8px]">Tap to claim</span>
+                        </div>
+                      </div>
+                      <span className="text-2xl shrink-0">🎁</span>
+                    </div>
+                  ))
+                ) : (
+                  <div
+                    onClick={() => setMode("vendor")}
+                    className="min-w-[220px] bg-gradient-to-r from-[#0B1220] to-[#1E293B] text-white p-3 rounded-2xl shadow-xs flex items-center justify-between cursor-pointer"
+                  >
+                    <div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">Verified Vendors</span>
+                      <h4 className="text-xs font-black leading-tight mt-0.5">{selectedCity} Network</h4>
+                      <p className="text-[9px] text-slate-300 font-medium">Connect &amp; Discover Instantly</p>
+                    </div>
+                    <span className="text-2xl">✨</span>
                   </div>
-                  <span className="text-2xl">🎉</span>
-                </div>
+                )}
 
-                <div 
+                <div
                   onClick={() => setMode("vendor")}
                   className="min-w-[190px] bg-gradient-to-r from-[#0076D7] to-[#005FAE] text-white p-3 rounded-2xl shadow-xs flex items-center justify-between cursor-pointer"
                 >
@@ -859,7 +1086,7 @@ export default function MobileAppSimulator() {
               <div className="px-4 pt-1">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xs font-bold text-slate-900">Explore All Services</h3>
-                  <button 
+                  <button
                     onClick={() => setActiveTab("Services")}
                     className="text-[11px] font-bold text-[#0076D7] hover:underline"
                   >
@@ -875,11 +1102,10 @@ export default function MobileAppSimulator() {
                       <div
                         key={srv.id}
                         onClick={() => setSelectedCategory(isSelected ? "All" : srv.slug)}
-                        className={`p-2 rounded-xl border flex flex-col items-center gap-1 cursor-pointer transition select-none ${
-                          isSelected
-                            ? "bg-blue-50 border-[#0076D7] ring-2 ring-[#0076D7]"
-                            : "bg-white border-slate-200 hover:border-slate-300 shadow-2xs"
-                        }`}
+                        className={`p-2 rounded-xl border flex flex-col items-center gap-1 cursor-pointer transition select-none ${isSelected
+                          ? "bg-blue-50 border-[#0076D7] ring-2 ring-[#0076D7]"
+                          : "bg-white border-slate-200 hover:border-slate-300 shadow-2xs"
+                          }`}
                       >
                         <div className={`w-9 h-9 rounded-xl ${srv.bgColor} flex items-center justify-center text-base shadow-2xs`}>
                           {srv.icon}
@@ -981,27 +1207,11 @@ export default function MobileAppSimulator() {
 
               </div>
 
-              {/* Vendor Switch Drawer */}
-              <div className="px-4 pt-1">
-                <div className="bg-gradient-to-r from-[#FF6B35] to-[#E5531E] text-white p-3 rounded-2xl shadow-sm flex items-center justify-between">
-                  <div>
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-orange-100">Vendor Mode</span>
-                    <h5 className="text-[11px] font-black leading-tight">Are you a Business Owner?</h5>
-                  </div>
-                  <button
-                    onClick={() => setMode("vendor")}
-                    className="bg-white text-[#FF6B35] hover:bg-orange-50 px-3 py-1 rounded-full text-[10px] font-bold shadow-2xs transition"
-                  >
-                    Open Console
-                  </button>
-                </div>
-              </div>
-
             </div>
           ) : (
             /* ================= VENDOR MODE VIEW ================= */
             <div className="space-y-4 p-4">
-              
+
               {/* Vendor Workspace Header */}
               <div className="flex items-center justify-between">
                 <div>
@@ -1044,7 +1254,7 @@ export default function MobileAppSimulator() {
               {/* Quick Actions List */}
               <div className="bg-white rounded-2xl border border-slate-200 p-3.5 space-y-2 shadow-2xs">
                 <h4 className="text-xs font-bold text-slate-900 mb-2">Business Management</h4>
-                
+
                 <div className="flex items-center justify-between py-1.5 border-b border-slate-100 cursor-pointer">
                   <div className="flex items-center gap-2">
                     <MessageSquare className="w-4 h-4 text-[#0076D7]" />
@@ -1093,48 +1303,70 @@ export default function MobileAppSimulator() {
 
         </div>
 
-        {/* Mobile Bottom Navigation Bar (5 Icons: Home, Services, Add/Switch, Alerts, Profile) */}
-        <nav className="absolute bottom-0 inset-x-0 bg-white border-t border-slate-200 py-2 px-4 flex items-center justify-between z-30 shadow-lg select-none">
-          <button 
+        {/* Mobile Bottom Navigation Bar (5 Items matching approved design) */}
+        <nav className="absolute bottom-0 inset-x-0 bg-white border-t border-slate-200 py-2.5 px-6 flex items-center justify-between z-30 shadow-lg select-none">
+          <button
             onClick={() => setActiveTab("Home")}
-            className={`flex flex-col items-center gap-0.5 ${activeTab === "Home" ? "text-[#0076D7]" : "text-slate-400"}`}
+            className={`flex flex-col items-center gap-1 ${activeTab === "Home" ? "text-[#0076D7]" : "text-slate-400"}`}
           >
-            <Home className="w-4 h-4" />
-            <span className="text-[9px] font-bold">Home</span>
+            <Home className="w-5 h-5" />
+            <span className="text-[10px] font-bold">Home</span>
           </button>
 
-          <button 
+          <button
             onClick={() => setActiveTab("Services")}
-            className={`flex flex-col items-center gap-0.5 ${activeTab === "Services" ? "text-[#0076D7]" : "text-slate-400"}`}
+            className={`flex flex-col items-center gap-1 ${activeTab === "Services" ? "text-[#0076D7]" : "text-slate-400"}`}
           >
-            <Compass className="w-4 h-4" />
-            <span className="text-[9px] font-medium">Services</span>
-          </button>
-
-          <button 
-            onClick={() => setMode(mode === "customer" ? "vendor" : "customer")}
-            className="flex flex-col items-center -mt-5"
-          >
-            <div className="w-10 h-10 rounded-full bg-[#FF6B35] text-white flex items-center justify-center shadow-md ring-4 ring-white">
-              <PlusCircle className="w-5 h-5" />
+            <div className="grid grid-cols-2 gap-0.5 w-4 h-4 place-items-center">
+              <span className={`w-1.5 h-1.5 rounded-2xs border ${activeTab === "Services" ? "border-[#0076D7] bg-[#0076D7]" : "border-slate-400"}`}></span>
+              <span className={`w-1.5 h-1.5 rounded-2xs border ${activeTab === "Services" ? "border-[#0076D7] bg-[#0076D7]" : "border-slate-400"}`}></span>
+              <span className={`w-1.5 h-1.5 rounded-2xs border ${activeTab === "Services" ? "border-[#0076D7] bg-[#0076D7]" : "border-slate-400"}`}></span>
+              <span className={`w-1.5 h-1.5 rounded-2xs border ${activeTab === "Services" ? "border-[#0076D7] bg-[#0076D7]" : "border-slate-400"}`}></span>
             </div>
-            <span className="text-[8px] font-bold text-[#FF6B35] mt-0.5">{mode === "customer" ? "Vendor" : "Customer"}</span>
+            <span className="text-[10px] font-bold">Services</span>
           </button>
 
-          <button 
+          {/* Center Raised Orange Wallet Action */}
+          <button
+            onClick={() => {
+              if (!isFirebaseLoggedIn) {
+                setAuthModalRole("customer");
+                setAuthModalTab("login");
+                setIsAuthModalOpen(true);
+                return;
+              }
+              setActiveTab("Wallet");
+            }}
+            className="flex flex-col items-center -mt-6 active:scale-95 transition"
+          >
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center shadow-lg ring-4 ring-white transition ${activeTab === "Wallet"
+              ? "bg-gradient-to-tr from-[#005bb5] via-[#0076D7] to-[#0A4D94] text-white scale-105"
+              : "bg-gradient-to-tr from-[#FF512F] via-[#FF6B35] to-[#F09819] text-white"
+              }`}>
+              <Wallet className="w-5 h-5 text-white" />
+            </div>
+            <span className={`text-[9px] font-black mt-0.5 ${activeTab === "Wallet" ? "text-[#0076D7]" : "text-slate-400"}`}>
+              Wallet
+            </span>
+          </button>
+
+          <button
             onClick={() => setActiveTab("Enquiries")}
-            className={`flex flex-col items-center gap-0.5 ${activeTab === "Enquiries" ? "text-[#0076D7]" : "text-slate-400"}`}
+            className={`flex flex-col items-center gap-1 ${activeTab === "Enquiries" ? "text-[#0076D7]" : "text-slate-400"}`}
           >
-            <MessageSquare className="w-4 h-4" />
-            <span className="text-[9px] font-medium">Enquiries</span>
+            <MessageSquare className="w-5 h-5" />
+            <span className="text-[10px] font-bold">Enquiries</span>
           </button>
 
-          <button 
+          <button
             onClick={() => setActiveTab("Profile")}
-            className={`flex flex-col items-center gap-0.5 ${activeTab === "Profile" ? "text-[#0076D7]" : "text-slate-400"}`}
+            className={`flex flex-col items-center gap-1 relative ${activeTab === "Profile" ? "text-[#0076D7]" : "text-slate-400"}`}
           >
-            <User className="w-4 h-4" />
-            <span className="text-[9px] font-medium">Profile</span>
+            <User className={`w-5 h-5 ${activeTab === "Profile" ? "fill-[#0076D7]" : ""}`} />
+            <span className="text-[10px] font-black">Profile</span>
+            {activeTab === "Profile" && (
+              <span className="w-3.5 h-0.5 bg-[#FF6B35] rounded-full absolute -bottom-1" />
+            )}
           </button>
         </nav>
 
@@ -1204,6 +1436,134 @@ export default function MobileAppSimulator() {
             </div>
           </div>
         )}
+
+        {/* Firebase Authentication Modal */}
+        {/* Dynamic Coupon Claim Modal */}
+        {selectedCouponModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+            <div className="w-full max-w-[340px] bg-white rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 relative font-['Poppins']">
+              <button
+                onClick={() => setSelectedCouponModal(null)}
+                className="absolute top-4 right-4 w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🎉</span>
+                <div>
+                  <span className="text-[10px] font-bold text-[#FF6B35] uppercase tracking-wider">
+                    {selectedCouponModal.category || "Exclusive Offer"}
+                  </span>
+                  <h3 className="text-sm font-black text-slate-900 leading-tight">
+                    {selectedCouponModal.title}
+                  </h3>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 leading-relaxed">
+                {selectedCouponModal.description}
+              </p>
+
+              <div className="p-3 bg-slate-50 border border-dashed border-slate-300 rounded-2xl flex items-center justify-between">
+                <div>
+                  <span className="text-[9px] font-bold text-slate-400 block uppercase">Promo Voucher Code</span>
+                  <span className="text-base font-black font-mono text-[#0076D7] tracking-wider">
+                    {selectedCouponModal.code}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(selectedCouponModal.code);
+                    alert(`Coupon code ${selectedCouponModal.code} copied!`);
+                  }}
+                  className="bg-[#0076D7] hover:bg-[#005bb5] text-white px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-2xs"
+                >
+                  Copy Code
+                </button>
+              </div>
+
+              <div className="text-[10px] text-slate-500 space-y-1">
+                <div>• <span className="font-semibold">{selectedCouponModal.terms || "Valid on all verified local vendors."}</span></div>
+                <div>• Applicable City: <span className="font-semibold text-slate-700">{selectedCouponModal.applicable_city || "All"}</span></div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <MobileEditProfileModal
+          isOpen={isEditProfileModalOpen}
+          onClose={() => setIsEditProfileModalOpen(false)}
+          currentUser={{
+            displayName: customerName,
+            fullName: customerName,
+            businessName: mode === "vendor" ? customerName : undefined,
+            phoneNumber: customerPhone,
+            role: mode === "vendor" ? "VENDOR" : "CUSTOMER",
+          }}
+          onProfileUpdated={(updated) => {
+            if (updated.displayName) setCustomerName(updated.displayName);
+            if (updated.phoneNumber) setCustomerPhone(updated.phoneNumber);
+          }}
+        />
+
+        <FirebaseAuthModal
+          isOpen={isAuthModalOpen}
+          onClose={() => setIsAuthModalOpen(false)}
+          defaultRole={authModalRole}
+          defaultTab={authModalTab}
+          onSuccess={(user, role, isRegistration) => {
+            if (isRegistration) {
+              toast.success(
+                `Registration completed successfully! Welcome to HELLO. Please log in with your credentials.`,
+                {
+                  title: "Account Created",
+                  duration: 5000,
+                }
+              );
+              return;
+            }
+
+            setIsFirebaseLoggedIn(true);
+            const name = user.displayName || user.fullName || (role === "vendor" ? "Business Partner" : "Customer User");
+            const phone = user.phoneNumber || "";
+            setCustomerName(name);
+            setCustomerPhone(phone);
+            setMode(role === "vendor" ? "vendor" : "customer");
+
+            if (typeof window !== "undefined") {
+              const existingToken = localStorage.getItem("hello_access_token");
+              const token = user.accessToken || existingToken || ("mob_tok_" + Math.random().toString(36).substring(2, 10));
+              localStorage.setItem("hello_access_token", token);
+              localStorage.setItem(
+                "hello_user",
+                JSON.stringify({
+                  id: user.id || user.uid || "",
+                  displayName: name,
+                  fullName: name,
+                  businessName: role === "vendor" ? name : undefined,
+                  phoneNumber: phone,
+                  roles: user.roles || (role === "vendor" ? ["VENDOR_OWNER"] : ["CUSTOMER"]),
+                  role: role === "vendor" ? "VENDOR_OWNER" : "CUSTOMER",
+                  status: "Active",
+                  isVerified: false,
+                })
+              );
+              localStorage.setItem("hello_active_role", role === "vendor" ? "MERCHANT" : "CUSTOMER");
+            }
+
+            setIsAuthModalOpen(false);
+            setActiveTab("Home");
+
+            toast.success(
+              `Logged in successfully as ${role === "vendor" ? "Business Partner" : "Customer"}. Welcome, ${name}!`,
+              {
+                title: "Login Successful",
+                duration: 4000,
+              }
+            );
+          }}
+        />
 
       </div>
     </div>

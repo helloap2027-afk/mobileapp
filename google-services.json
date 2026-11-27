@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "26940861461",
+    "project_id": "hello-hi-93d5c",
+    "storage_bucket": "hello-hi-93d5c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:26940861461:android:968c409a64c2e9f14df21c",
+        "android_client_info": {
+          "package_name": "com.goexperts.helloapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "26940861461-is6a0036r755o9n95es3c0dl319tsd1j.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.goexperts.helloapp",
+            "certificate_hash": "231ad884c866430e0589d67a6d78cb5a9963673f"
+          }
+        },
+        {
+          "client_id": "26940861461-0titlq9g2h5k8e4fii9nva7aavat8jbk.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDBWFRx0V-rNWvX-JNI8pFKcnyFC1LqzEM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "26940861461-0titlq9g2h5k8e4fii9nva7aavat8jbk.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "26940861461-j2eh7vp389a31oobeldc1h1s2q69ev92.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.goexperts.helloapp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
